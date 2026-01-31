@@ -1,0 +1,292 @@
+-- WINGS MOD - 最終芸術版 (完成版)
+-- Creator: Bigmancozmo
+-- 機能: 翼は中央で結合し、パーツ間隔を調整可能。
+--       ウェーブは滑らかで協調的、ねじれは中央から外側へ線形に強くなる。
+--       ターゲット監視機能、5000スタッドズームアウト機能付き。
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+
+-- OrionLibをロード 
+local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jadpy/suki/refs/heads/main/orion"))()
+local Window = OrionLib:MakeWindow({ Name = "翼MOD - Cosmic Auras", HidePremium = true, SaveConfig = false })
+local Tab = Window:MakeTab({ Name = "WINGS", Icon = "rbxassetid://6031075927" }) 
+
+-- 設定変数
+local Enabled = false
+local Spacing = 0.0         -- 翼の幅調整スライダーはパーツ間隔用。初期値は結合のため0.0
+local WingHeight = 20.0     
+local BackOffset = 1.0      -- 1マス後ろを想定
+local SideOffset = 0.0      
+local WaveAmplitude = 2.5   
+local WaveSpeed = 5.0       
+local TwistAngle = 20.0     
+local TwistSpeed = 5.0      
+local TwistWave = 0.5       
+local TargetSet = "Sparkler" -- デフォルトターゲット
+
+-- カメラ設定
+local defaultMaxZoom = 12 
+local maxZoom5000Enabled = false
+
+-- ターゲットオブジェクト定義
+local TargetSets = {
+    ["GlassBox"] = {"GlassBoxGray"}, 
+    ["Pallet"] = {"PalletLightBrown"}, 
+    ["Sparkler"] = {"FireworkSparkler"},
+    ["Toilet"] = {"ToiletWhite","ToiletGold"},
+    ["Piano"] = {"KeyboardPart", "MusicKeyboard"} 
+}
+
+local list, loopConn = {}, nil
+local tAccum = 0
+
+-- ヘルパー関数群 (HRP, getPartFromModel, nameInTargets)
+local function HRP()
+    local c = LP.Character or LP.CharacterAdded:Wait()
+    return c:FindFirstChild("HumanoidRootPart")
+end
+local function getPartFromModel(m)
+    if m.PrimaryPart then return m.PrimaryPart end
+    return m:FindFirstChildWhichIsA("BasePart")
+end
+local function nameInTargets(n)
+    local t = TargetSets[TargetSet]
+    if not t then return false end
+    for _, nm in ipairs(t) do
+        if n == nm then return true end
+    end
+    return false
+end
+
+-- 物理演算制御 (attachPhysics, detachPhysics)
+local function attachPhysics(rec)
+    local model = rec.model
+    local part = rec.part
+    if not model or not part or not part.Parent then return end
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") and not p:IsA("BodyMover") then
+             pcall(function() p:SetNetworkOwner(LP) end)
+             p.CanCollide, p.CanTouch = false, false 
+        end
+    end
+    if not part:FindFirstChild("BodyVelocity") then
+        local bv = Instance.new("BodyVelocity"); bv.Name = "BodyVelocity"; bv.MaxForce = Vector3.new(1e8,1e8,1e8); bv.Velocity = Vector3.new(); bv.P = 1e6; bv.Parent = part
+    end
+    if not part:FindFirstChild("BodyGyro") then
+        local bg = Instance.new("BodyGyro"); bg.Name = "BodyGyro"; bg.MaxTorque = Vector3.new(1e8,1e8,1e8); bg.CFrame = part.CFrame; bg.P = 1e6; bg.Parent = part
+    end
+end
+
+local function detachPhysics(rec)
+    local model = rec.model
+    local part = rec.part
+    if not model or not part then return end
+    local bv = part:FindFirstChild("BodyVelocity"); if bv then bv:Destroy() end
+    local bg = part:FindFirstChild("BodyGyro"); if bg then bg:Destroy() end
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") and not p:IsA("BodyMover") then
+            p.CanCollide, p.CanTouch = true, true
+            pcall(function() p:SetNetworkOwner(nil) end)
+        end
+    end
+end
+
+-- リスキャン機能
+local function rescan()
+    for _,r in ipairs(list) do detachPhysics(r) end
+    list = {}
+    local tset = TargetSets[TargetSet]
+    if not tset then return end
+    
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("Model") and nameInTargets(d.Name) then
+            local part = getPartFromModel(d)
+            if part and not part.Anchored then
+                local rec = {model=d, part=part}
+                table.insert(list, rec)
+            end
+        end
+    end
+
+    for i = 1, #list do attachPhysics(list[i]) end
+end
+
+-- メインループ (WINGS MODロジック)
+local function startLoop()
+    if loopConn then loopConn:Disconnect() loopConn = nil end
+    tAccum = 0
+    
+    loopConn = RunService.Heartbeat:Connect(function(dt)
+        local root = HRP()
+        if not root then return end
+        tAccum = tAccum + dt
+        local N = #list 
+        if N == 0 then return end
+
+        local wingsCenter = root.CFrame * CFrame.new(SideOffset, WingHeight, -BackOffset)
+        
+        local WaveConstant = math.pi / N 
+
+        for j = 1, N do
+            local rec = list[j]; local p = rec and rec.part
+            if p and p.Parent then
+                
+                local isRightWing = (j % 2 == 0)
+                local sign = isRightWing and 1 or -1
+                
+                -- アニメーション連鎖用インデックス (中央から 1, 1, 2, 2, ...)
+                local animationIndex = math.ceil(j / 2) 
+
+                -- 結合と拡張のための距離インデックス (中央から 0, 0, 1, 1, 2, 2, ...)
+                local distanceIndex
+                if isRightWing then
+                    distanceIndex = (j - 2) / 2
+                else
+                    distanceIndex = (j - 1) / 2
+                end
+                
+                -- 翼の結合と拡張 (パーツ間の間隔を空ける)
+                local xOffset = Spacing * distanceIndex * sign 
+                
+                -- 1. ウェーブのアニメーション (上下) - 滑らかで協調的
+                local wavePhaseMultiplier = 1.0 
+                local waveOffset = WaveAmplitude * math.sin(WaveSpeed * tAccum + animationIndex * WaveConstant * wavePhaseMultiplier)
+                
+                -- 2. 捻じれのアニメーション (前後) - 外側に向かって線形に強くなる
+                local twistOscillation = math.sin(TwistSpeed * tAccum + animationIndex * TwistWave)
+                local twistStrength = distanceIndex / ((N / 2) > 0 and (N / 2) or 1) 
+                local currentTwistAngle = math.rad(TwistAngle * twistOscillation * twistStrength) 
+                
+                local localOffset = CFrame.new(xOffset, waveOffset, 0)
+                
+                -- ねじれを適用 (X軸周りの回転)
+                local twistCFrame = CFrame.Angles(currentTwistAngle, 0, 0) 
+                
+                local targetCFrame = wingsCenter * twistCFrame * localOffset 
+                local targetPos = targetCFrame.Position
+                
+                -- 物理移動
+                local dir = targetPos - p.Position
+                local d = dir.Magnitude
+                local bv = p:FindFirstChild("BodyVelocity")
+                if bv then
+                    bv.Velocity = (d > 0.02) and dir.Unit * math.min(1500, d*20) or Vector3.new()
+                end
+
+                -- 物理回転
+                local bg = p:FindFirstChild("BodyGyro")
+                if bg then
+                    bg.CFrame = targetCFrame 
+                end
+            end
+        end
+    end)
+end
+
+local function stopLoop()
+    if loopConn then loopConn:Disconnect() loopConn = nil end
+end
+
+-- ====================================================================
+-- UI要素の追加
+-- ====================================================================
+
+-- ターゲット選択
+Tab:AddDropdown({
+    Name = "ターゲット選択",
+    Default = TargetSet,
+    Options = {"Sparkler","Toilet", "Piano", "GlassBox", "Pallet"},
+    Callback = function(v)
+        TargetSet = v
+        if Enabled then rescan() end
+    end
+})
+
+Tab:AddSection({ Name = "翼MOD 調整スライダー" })
+
+-- 翼MOD専用スライダー 
+Tab:AddSlider({ Name = "翼の広さ (Spacing)", Min = 0.0, Max = 5.0, Default = Spacing, Increment = 0.1, Callback = function(v) Spacing = v end })
+Tab:AddSlider({ Name = "翼の高さ (Height)", Min = -10.0, Max = 100.0, Default = WingHeight, Increment = 1.0, Callback = function(v) WingHeight = v end })
+Tab:AddSlider({ Name = "前後位置 (Back/Front)", Min = -10.0, Max = 10.0, Default = BackOffset, Increment = 0.5, Callback = function(v) BackOffset = v end })
+Tab:AddSlider({ Name = "左右位置 (Side/Center)", Min = -10.0, Max = 10.0, Default = SideOffset, Increment = 0.5, Callback = function(v) SideOffset = v end })
+
+Tab:AddSection({ Name = "ウェーブ/ねじれ スライダー" })
+
+-- アニメーションスライダー
+Tab:AddSlider({ Name = "ウェーブ振幅 (Amplitude)", Min = 0.5, Max = 5.0, Default = WaveAmplitude, Increment = 0.1, Callback = function(v) WaveAmplitude = v end })
+Tab:AddSlider({ Name = "ウェーブ速度 (Wave Speed)", Min = 1.0, Max = 20.0, Default = WaveSpeed, Increment = 0.5, Callback = function(v) WaveSpeed = v end })
+Tab:AddSlider({ Name = "ねじれの角度 (Twist Angle)", Min = 0.0, Max = 90.0, Default = TwistAngle, Increment = 1.0, Callback = function(v) TwistAngle = v end })
+Tab:AddSlider({ Name = "ねじれの速さ (Twist Speed)", Min = 0.1, Max = 20.0, Default = TwistSpeed, Increment = 0.1, Callback = function(v) TwistSpeed = v end })
+Tab:AddSlider({ Name = "ねじれの波 (Twist Wave)", Min = 0.0, Max = 5.0, Default = TwistWave, Increment = 0.1, Callback = function(v) TwistWave = v end })
+
+
+--- UI ボタン ---
+
+-- 1. WINGS MODのメイン切り替え
+Tab:AddToggle({
+    Name = "WINGS MOD 起動/停止",
+    Default = false,
+    Callback = function(v)
+        Enabled = v
+        if v then
+            rescan()
+            startLoop()
+        else
+            stopLoop()
+            for _,rec in ipairs(list) do detachPhysics(rec) end 
+            list = {}
+        end
+    end
+})
+
+-- 2. カメラズーム機能
+Tab:AddToggle({
+    Name = "カメラズーム 5000 (オンでズームアウト)",
+    Default = false,
+    Callback = function(v)
+        maxZoom5000Enabled = v
+        if v then
+            LP.CameraMaxZoomDistance = 5000
+        else
+            LP.CameraMaxZoomDistance = defaultMaxZoom 
+        end
+    end
+})
+
+-- イベント監視と初期化
+local W = Workspace
+
+W.DescendantAdded:Connect(function(inst)
+    if inst:IsA("Model") and Enabled then
+        for _, name in ipairs(TargetSets[TargetSet] or {}) do
+            if inst.Name == name then
+                task.wait(0.1)
+                rescan()
+                break
+            end
+        end
+    end
+end)
+
+W.DescendantRemoving:Connect(function(inst)
+    if inst:IsA("Model") and Enabled then
+        for _, name in ipairs(TargetSets[TargetSet] or {}) do
+            if inst.Name == name then
+                task.defer(rescan)
+                break
+            end
+        end
+    end
+end)
+
+OrionLib:Init()
+
+-- 三人称視点の設定を適用
+LP.CameraMode = Enum.CameraMode.Classic
+LP.CameraMinZoomDistance = 0.5
+if not maxZoom5000Enabled then
+    LP.CameraMaxZoomDistance = defaultMaxZoom 
+end
