@@ -292,3 +292,6 @@ LP.CameraMinZoomDistance = 0.5
 if not maxZoom5000Enabled then
     LP.CameraMaxZoomDistance = defaultMaxZoom 
 end
+return function()
+    -- メイン処理
+end
