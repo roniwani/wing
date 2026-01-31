@@ -1,3 +1,10 @@
+-- ▼ Orion 本体を直接埋め込み
+local OrionSource = [[
+（ここに Orion のコード全文をそのまま貼る）
+]]
+
+-- ▼ Orion 起動
+local OrionLib = loadstring(OrionSource)()
 -- WINGS MOD - 最終芸術版 (完成版)
 -- Creator: Bigmancozmo
 -- 機能: 翼は中央で結合し、パーツ間隔を調整可能。
@@ -8,11 +15,6 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
-
--- OrionLibをロード 
-local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jadpy/suki/refs/heads/main/orion"))()
-local Window = OrionLib:MakeWindow({ Name = "翼MOD - Cosmic Auras", HidePremium = true, SaveConfig = false })
-local Tab = Window:MakeTab({ Name = "WINGS", Icon = "rbxassetid://6031075927" }) 
 
 -- 設定変数
 local Enabled = false
